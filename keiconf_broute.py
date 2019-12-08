@@ -28,7 +28,11 @@ broute_port = '/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_xxxxxxxx-if00-port0'
 broute_baudrate = 115200
 broute_id = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 broute_pwd = 'xxxxxxxxxxxx'
-
+requests = [
+    { 'epc':['D3','D7','E1'], 'cycle': 3600 },  # 係数(D3),有効桁数(D7),単位(E1),3600秒ごと
+    { 'epc':['E7'], 'cycle': 10 },              # 瞬時電力(E7),10秒ごと
+    { 'epc':['E0'], 'cycle': 300 },             # 積算電力量(E0),300秒ごと
+],
 # definition fo worker objects
 worker_def = [
     {
@@ -56,6 +60,7 @@ worker_def = [
             'baudrate': broute_baudrate,
             'broute_id': broute_id,
             'broute_pwd': broute_pwd,
+            'requests': requests,
             'record_que': record_que,
         }
     },

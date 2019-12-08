@@ -833,7 +833,6 @@ class DataFrame ( ):
 
         return ""
 
-
 class BrouteReader ( Worker ):
     """スマートメーターと通信を行い、継続的に電力情報の読み取りを行う。
 
@@ -867,14 +866,15 @@ class BrouteReader ( Worker ):
         回復不能なエラーが発生したときは、状態を巻き戻し最初からやり直す。
     """
 
-    def __init__( self , broute_id, port, baudrate, broute_pwd , record_que=None ):
+    def __init__( self , port, baudrate, broute_id, broute_pwd, requests=[], record_que=None ):
         """コンストラクタ
 
         引数:
-            broute_id (str): Bルート接続用ID（電力会社に申請して取得）
-            broute_pwd (str): Bルート接続用パスワード（電力会社に申請して取得）
             port (str): WiSUN デバイスのシリアルポートのデバイスファイルパス
             baudrate (int): ボーレート
+            broute_id (str): Bルート接続用ID（電力会社に申請して取得）
+            broute_pwd (str): Bルート接続用パスワード（電力会社に申請して取得）
+            requests (list of dic): スマートメータに問い合わせるプロパティリスト、間隔
             record_que (Queue): 記録用 queue
         """
         super().__init__()
@@ -882,6 +882,16 @@ class BrouteReader ( Worker ):
         self.record_que = record_que
         self.broute_id = broute_id
         self.broute_pwd = broute_pwd
+        if not requests:
+            # 指定されなかったときのデフォルト値
+            requests=[
+                { 'epc':['D3','D7','E1'], 'cycle': 3600 }, # 係数(D3),有効桁数(D7),単位(E1)
+                { 'epc':['E7'], 'cycle': 10 }, # 瞬時電力(E7)
+                { 'epc':['E0'], 'cycle': 120 }, # 積算電力量(E0)
+            ]
+        for req in requests:
+            req['lasttime'] = 0
+        self.requests = requests
         self.skdev = SKDevice( port, baudrate )
 
         # 状態
@@ -903,11 +913,8 @@ class BrouteReader ( Worker ):
 
         # 定期的な実行のための変数（前回実行した時間を記憶しておく）
         self.lasttime_rejoin = 0
-        self.lasttime_instantanous = 0
-        self.lasttime_cumulative = 0
         self.lasttime_erxudp = 0
         self.lasttime_receive = 0
-        self.lasttime_info = 0
 
     def _open( self ):
         """デバイスのシリアルポートをopenする"""
@@ -1121,24 +1128,15 @@ class BrouteReader ( Worker ):
 
                 # 必要があればここで定期的に _rejoin() を行う。
 
-                if now - self.lasttime_instantanous > 10:
-                    # 10秒/5秒ごとに瞬時電力(E7)を要求
-                    cmd = DataFrame.cmd_get_property(['E7'])
-                    res = self._send(cmd)
-                    self.lasttime_instantanous = now
-
-                if now - self.lasttime_cumulative > 120:
-                    # 120秒ごとに積算電力(E0)を要求
-                    time.sleep(0.1)
-                    cmd = DataFrame.cmd_get_property(['E0'])
-                    res = self._send(cmd)
-                    self.lasttime_cumulative = now
-
-                if now - self.lasttime_info > 600:
-                    # 10分ごとにデータ情報 係数(D3)、有効桁(D7)、単位(E1)を取得する
-                    cmd = DataFrame.cmd_get_property(['D3','D7','E1'])
-                    res = self._send(cmd)
-                    self.lasttime_info = now
+                for req in self.requests:
+                    # 要求するデータのリストについて、定期的に値要求する
+                    if now - req['lasttime'] > req['cycle']:
+                        cmd = DataFrame.cmd_get_property(req['epc'])
+                        res = self._send(cmd)
+                        if req['lasttime'] == 0:
+                            req['lasttime'] = now
+                        else:
+                            req['lasttime'] += req['cycle']
 
                 # スマートメーターからの電文を待つ
                 # この関数は電文があれば直ちに DataFrame オブジェクトを返すが、

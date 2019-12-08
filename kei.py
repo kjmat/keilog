@@ -7,7 +7,7 @@
 """
 __author__ = "MATSUDA, Koji <kjmatsuda@gmail.com>"
 __version__ = "0.0.1"
-__date__    = "2019-12-02"
+__date__    = "2019-12-07"
 
 import signal
 import atexit
