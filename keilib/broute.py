@@ -11,6 +11,8 @@ import os
 import json
 import threading
 import queue
+from abc import ABCMeta, abstractmethod
+
 from keilib.worker import Worker
 
 from logging import getLogger, StreamHandler, DEBUG
@@ -59,7 +61,85 @@ def is_ipv6_address( addr ):
             return False
     return True
 
-class SKDevice ( ):
+class WiSunDevice ( metaclass=ABCMeta ):
+    """WiSUN デバイスドライバ抽象クラス
+
+    以下のメソッドをインプリメントすると BrouteReader から利用できる
+    """
+    @abstractmethod
+    def open( self ):
+        """デバイスのオープン,ハードウェアの認識
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def reset( self ):
+        """デバイスのリセット,レジスタ等を初期化
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def setup( self, id, password ):
+        """アクティブスキャンの準備（必要な情報をセット）
+        引数: id/password BルートID/パスワード
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def scan( self ):
+        """アクティブスキャンの実行、結果の保持
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def join( self ):
+        """PANA認証の実行
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def rejoin( self ):
+        """PANA再認証の実行
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def send( self, dataframe ):
+        """Echonet Lite データフレームの送信
+        引数:
+            dataframe: Echonet 電文（バイナリ）
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def receive( self ):
+        """Echonet Lite データフレームの受信
+        戻り値: 受信した電文からつくられた DataFrame オブジェクト
+        """
+        pass
+
+    @abstractmethod
+    def term( self ):
+        """PANAセッションの終了
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+    @abstractmethod
+    def close( self ):
+        """デバイスのクローズ,デバイスの開放
+        戻り値: True（成功）/False（失敗）
+        """
+        pass
+
+class WiSunRL7023DSS ( WiSunDevice ):
     """RL7023 Stick-D/DSS 用デバイスドライバ
 
     テセラテクノロジーの HEMS 用 Wi-SUN モジュール Route-B/HAN デュアル対応
@@ -434,7 +514,7 @@ class SKDevice ( ):
             return False
 
     def setup( self, id, password ):
-        """デバイスにBルートIDおよびパスワードを登録し、接続準備を整える
+        """デバイスにBルートIDおよびパスワードを登録し、スキャンの前準備
         戻り値:
             True: 成功
             False: 失敗
@@ -447,7 +527,7 @@ class SKDevice ( ):
             return False
 
     def scan( self ):
-        """アクティブスキャンを実行し結果を self.scanresult 辞書に格納
+        """アクティブスキャンを実行する。結果を self.scanresult 辞書に格納
         戻り値:
             True: 成功
             False: 失敗
@@ -892,7 +972,7 @@ class BrouteReader ( Worker ):
         for req in requests:
             req['lasttime'] = 0
         self.requests = requests
-        self.skdev = SKDevice( port, baudrate )
+        self.wisundev = WiSunRL7023DSS( port, baudrate )
 
         # 状態
         self._STATE_INIT  = 0
@@ -906,7 +986,7 @@ class BrouteReader ( Worker ):
         self.scan_retry = 0
         self.join_retry = 0
 
-        # 係数、単位、有効桁数 時々スマートメーターに問い合わせる
+        # 係数、単位、有効桁数 のデフォルト値 時々スマートメーターに問い合わせるべきもの
         self.coefficient = 1
         self.unit = 0.1
         self.effective_digits = 0x06
@@ -919,7 +999,7 @@ class BrouteReader ( Worker ):
     def _open( self ):
         """デバイスのシリアルポートをopenする"""
         logger.info('state = INITIAL')
-        if self.skdev.open():
+        if self.wisundev.open():
             self.state = self._STATE_OPEN
             logger.info('state => OPEN')
         else:
@@ -931,7 +1011,7 @@ class BrouteReader ( Worker ):
         """デバイスのリセット、BルートID、パスワードの設定
         """
         # リセット
-        if self.skdev.reset():
+        if self.wisundev.reset():
             pass
         else:
             logger.error('ERROR Cannot reset device')
@@ -939,17 +1019,17 @@ class BrouteReader ( Worker ):
             # break
 
         # BルートIDとパスワードをデバイスに設定（レジスタに登録される）
-        if self.skdev.setup( self.broute_id, self.broute_pwd ):
+        if self.wisundev.setup( self.broute_id, self.broute_pwd ):
             self.state = self._STATE_SETUP
             logger.info('state => SETUP')
-            self.skdev._get_registers()
+            self.wisundev._get_registers()
         else:
             logger.error('ERROR Cannot setup device')
             time.sleep(5)
 
     def _scan( self ):
         """アクティブスキャンの実行（リトライあり）"""
-        if self.skdev.scan():
+        if self.wisundev.scan():
             self.state = self._STATE_SCAN
             logger.info('state => SCAN')
             self.scan_retry = 0
@@ -959,13 +1039,13 @@ class BrouteReader ( Worker ):
             self.scan_retry += 1
             if self.scan_retry > 5:
                 self.scan_retry = 0
-                self.skdev.close()
+                self.wisundev.close()
                 self.state = self._STATE_INIT
             time.sleep(10)
 
     def _join( self ):
         """PANA認証接続要求を行う（リトライあり）"""
-        if self.skdev.join():
+        if self.wisundev.join():
             self.state = self._STATE_JOIN
             logger.info('state => JOIN')
             self.join_retry = 0
@@ -981,7 +1061,7 @@ class BrouteReader ( Worker ):
             self.join_retry += 1
             if self.join_retry > 5:
                 self.join_retry = 0
-                self.skdev.close()
+                self.wisundev.close()
                 try:
                     os.remove('scancache.json')
                 except:
@@ -993,7 +1073,7 @@ class BrouteReader ( Worker ):
         """PANA再認証を行う
         セッションの有効期限が近づくとデバイスが自動的に再認証を行う設定になっている場合は不要
         """
-        if self.skdev.rejoin():
+        if self.wisundev.rejoin():
             self.state = self._STATE_JOIN
             logger.info('state => JOIN')
 
@@ -1007,10 +1087,10 @@ class BrouteReader ( Worker ):
 
     def _send( self, cmd ):
         """Bルートのプロパティ値要求電文をスマートメーターに送る"""
-        return self.skdev.send( cmd )
+        return self.wisundev.send( cmd )
 
     def _receive ( self ):
-        return self.skdev.receive()
+        return self.wisundev.receive()
 
     def _accept( self, dataframe ):
         """受信した電文を受け付ける処理"""
@@ -1095,8 +1175,8 @@ class BrouteReader ( Worker ):
             logger.warning(dataframe.dataframe)
 
     def _term( self ):
-        self.skdev.term()
-        self.skdev.close()
+        self.wisundev.term()
+        self.wisundev.close()
 
     def run( self ):
         """スレッド処理"""
@@ -1157,8 +1237,8 @@ class BrouteReader ( Worker ):
                 # 過去10分(600秒)で 電文受信が発生しなかったら初期化
                 if now - self.lasttime_receive > 600:
                     logger.error('ERROR broute data receive timeout')
-                    self.skdev.term()
-                    self.skdev.close()
+                    self.wisundev.term()
+                    self.wisundev.close()
                     self.state = self._STATE_INIT
                     time.sleep(5)
 

@@ -30,10 +30,10 @@ ToDo:
     * センサーのクラスを充実
         - DS18B20 温度センサー
         - sht21 温度・湿度センサー
-        - mcp3208 ADCセンサー
+        - mcp3208 ADC
         - パルスセンサー
 '''
 
 __author__  = "MATSUDA, Koji <kjmatsuda@gmail.com>"
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 __date__    = "2019-12-07"
