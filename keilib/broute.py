@@ -42,6 +42,13 @@ reginfo = {
 }
 
 def is_hex( data, length=0 ):
+    """妥当な16進数かどうかをチェック
+    引数:
+        data (str):チェックする文字列
+        length (int) = 0: 指定すると長さチェックも行う
+    戻り値:
+        True/False
+    """
     if length:
         if len(data) != length:
             return False
@@ -51,6 +58,12 @@ def is_hex( data, length=0 ):
     return True
 
 def is_ipv6_address( addr ):
+    """妥当なipv6アドレスであるかチェック
+    引数:
+        addr (str): チェックするアドレス文字列
+    戻り値:
+        True/False
+    """
     lst = addr.split(':')
     if len(lst) != 8:
         return False
@@ -60,6 +73,22 @@ def is_ipv6_address( addr ):
         if not is_hex(word):
             return False
     return True
+
+def hex_to_signed_int(value, digit=0):
+    """16進文字列データを2の補数による unsigned int として整数に変換する
+    引数:
+        value (str): 変換する16進表記文字列
+        digit (int)=0: 16進数の桁数。省略するとvalueの長さを桁数とみなす
+    戻り値:
+        変換結果の整数
+    """
+    if digit == 0:
+        digit = len(value)
+    digit2 = digit * 4
+    fmtstr = '{:0' + str(digit2) + 'b}'
+    bits = fmtstr.format(int(value,16))
+    return -int(bits[0]) << digit2 | int(bits, 2)
+
 
 class WiSunDevice ( metaclass=ABCMeta ):
     """WiSUN デバイスドライバ抽象クラス
@@ -1114,10 +1143,18 @@ class BrouteReader ( Worker ):
             # 送信元が '028801'（スマートメーター）で ESV が 72（プロパティ値要求の応答）
             for epc, edt in dataframe.properties.items():
                 if epc == 'E7': # 瞬時電力 E7
-                    value = int(edt, 16)
+                    value = hex_to_signed_int(edt)
                     self.record_que.put(['BR', epc, value, 'X'])
 
-                elif epc == 'E0': # 積算電力 cumulative energy E0
+                elif epc == 'E8': # 瞬時電流計測値
+                    rphase = edt[:4]
+                    tphase = edt[4:]
+                    rvalue = hex_to_signed_int(rphase) * 0.1 # アンペア
+                    tvalue = hex_to_signed_int(tphase) * 0.1 # アンペア
+                    self.record_que.put(['BR', 'E8R', rvalue, 'X'])
+                    self.record_que.put(['BR', 'E8T', tvalue, 'X'])
+
+                elif epc in ['E0','E3']: # 積算電力量（正／負）
                     value = getvalue(edt)
                     self.record_que.put(['BR', epc, value, 'X'])
 
@@ -1163,6 +1200,7 @@ class BrouteReader ( Worker ):
                     value = getvalue(edt[14:])
                     logger.info(datestr(edt[:14]) + ' ' + epc + ' = ' + str(value))
                     self.record_que.put(['BR', epc, value, 'X'])
+
                 else:
                     logger.warning('unknown property:' + epc + ' value:' + edt)
 
