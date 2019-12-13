@@ -139,10 +139,10 @@ class WiSunDevice ( metaclass=ABCMeta ):
         pass
 
     @abstractmethod
-    def send( self, dataframe ):
+    def sendto( self, dataframe ):
         """Echonet Lite データフレームの送信
         引数:
-            dataframe: Echonet 電文（バイナリ）
+            dataframe: Echonet 電文（DataFrame オブジェクト）
         戻り値: True（成功）/False（失敗）
         """
         pass
@@ -661,7 +661,7 @@ class WiSunRL7023DSS ( WiSunDevice ):
         """
         return self.join(rejoin=True)
 
-    def send( self, dataframe ):
+    def sendto( self, dataframe ):
         """スマートメーターにコマンドを送信する
 
         引数:
@@ -674,6 +674,7 @@ class WiSunRL7023DSS ( WiSunDevice ):
         ToDo:
             cmd の side を省略すると、Bルート専用のデバイスに対応できるのでは？
         """
+        byteframe = bytes.fromhex(dataframe.encode())
         # コマンド送信
         #               udp_handle
         #               | addr port
@@ -681,8 +682,8 @@ class WiSunRL7023DSS ( WiSunDevice ):
         #               |  |   |   | side 0:B-route
         #               |  |   |   | | length
         #               |  |   |   | | |
-        cmd = "SKSENDTO 1 {0} 0E1A 1 0 {1:04X} ".format(self.ipv6_addr, len(dataframe)).encode('ascii')
-        cmd += dataframe # + b'\r\n'
+        cmd = "SKSENDTO 1 {0} 0E1A 1 0 {1:04X} ".format(self.ipv6_addr, len(byteframe)).encode('ascii')
+        cmd += byteframe # + b'\r\n'
         self.ser.write(cmd)
         evt21 = False
         toc = 0
@@ -839,15 +840,16 @@ class DataFrame ( ):
     def __init__( self, dataframe={} ):
         """コンストラクタ"""
         self.dataframe = dataframe
-        self.ehd = dataframe['EHD']
-        self.tid = dataframe['TID']
-        self.seoj = dataframe['SEOJ']
-        self.deoj = dataframe['DEOJ']
-        self.esv = dataframe['ESV']
-        self.properties = {}
-        for prop in dataframe['PROPERTY']:
-            #prop['EPC']: prop[]
-            self.properties[prop['EPC']] = prop['EDT']
+        if dataframe:
+            self.ehd = dataframe['EHD']
+            self.tid = dataframe['TID']
+            self.seoj = dataframe['SEOJ']
+            self.deoj = dataframe['DEOJ']
+            self.esv = dataframe['ESV']
+            self.properties = {}
+            for prop in dataframe['PROPERTY']:
+                #prop['EPC']: prop[]
+                self.properties[prop['EPC']] = prop['EDT']
 
     @classmethod
     def decode ( cls, length, encoded_data ):
@@ -871,34 +873,30 @@ class DataFrame ( ):
             logger.error('DataFrame decode error - invalid data')
             return None
 
+        df = cls()
         try:
-            dataframe['EHD' ]     = encoded_data[:4]
-            dataframe['TID' ]     = encoded_data[4:8]
-            dataframe['SEOJ']     = encoded_data[8:14]
-            dataframe['DEOJ']     = encoded_data[14:20]
-            dataframe['ESV' ]     = encoded_data[20:22]
-            dataframe['OPC' ]     = encoded_data[22:24]
-            dataframe['PROPERTY'] = []
+            df.ehd = encoded_data[:4]
+            df.tid = encoded_data[4:8]
+            df.seoj = encoded_data[8:14]
+            df.deoj = encoded_data[14:20]
+            df.esv = encoded_data[20:22]
+            df.opc = encoded_data[22:24]
+            df.properties = {}
             base = 24
-            int_opc = int(dataframe['OPC'], 16)
+            int_opc = int(df.opc, 16)
             for pc in range(int_opc):
-                prop = {}
                 epc = encoded_data[base     : base + 2]
                 pdc = encoded_data[base + 2 : base + 4]
                 int_pdc = int(pdc, 16)
                 edt = encoded_data[base + 4 : base + 4 + int_pdc * 2]
-                prop['EPC'] = epc
-                prop['PDC'] = pdc
-                prop['EDT'] = edt
+                df.properties[epc] = edt
                 base += 4 + int_pdc * 2
-                dataframe['PROPERTY'].append(prop)
 
         except:
             logger.error('DataFrame decode error - conflicting data')
-            logger.error(dataframe)
             return None
 
-        return cls(dataframe)
+        return df
 
     @classmethod
     def cmd_get_property( cls , epc_list ):
@@ -908,39 +906,34 @@ class DataFrame ( ):
             epc_code_list( list of str ): 要求するプロパティコードのリスト
 
         戻り値:
-            構成された電文本体（バイナリ）(SKスタックは送信時はバイナリで電文を指定する)
+            構成されたデータフレームオブジェクト
 
         ToDo:
             SEOJやDEOJは決め打ちでいいのか？
-            電文（バイナリ）を返すだけの仕様だが、インスタンス化の必要はあるか意味があるか
         '''
-
-        ehd  = b'\x10\x81'                      # EHD(2Byte) 0x1081 固定（EchonetBroute Lite)
-        tid  = cls.TID.to_bytes(2,'big')
-        cls.TID  = (cls.TID + 1) % 0xffff       # インクリメントしておく
-        seoj = b'\x05\xFF\x01'                  # SEOJ 送信元オブジェクトの指定 x05:管理操作, xFF:コントローラ
-        deoj = b'\x02\x88\x01'                  # DEOJ 相手先オブジェクトの指定 x02:住宅設備, x88:スマートメータ
-        esv  = b'\x62'                          # ESV サービスコード x62:プロパティ値読み出し要求
-        opc  = len(epc_list).to_bytes(1,'big')  # OPC プロパティカウンタ
-        dataframe = ehd + tid + seoj + deoj + esv + opc
-
+        df = cls()
+        df.ehd = '1081'
+        df.tid = '{:04X}'.format(cls.TID)
+        # cls.TID  = (cls.TID + 1) % 0xffff       # インクリメントしておく
+        df.seoj = '05FF01'
+        df.deoj = '028801'
+        df.esv = '62'
+        df.opc = '{:02X}'.format(len(epc_list))
+        df.properties = {}
         for epc in epc_list:
-            b_epc  = bytes.fromhex(epc)
-            pdc  = b'\x00'
-            dataframe += b_epc + pdc
-
-        logger.debug('Echonet-lite send frame : ' + dataframe.hex())
-
-        return dataframe
+            df.properties[epc] = ''
+        logger.debug('Echonet-lite sendto frame : ' + df.encode())
+        return df
 
     def encode( self ):
-        """DataFrameオブジェクトから送信電文（HEX文字データ列）を作成する
-
-        ToDo:
-            必要？
+        """DataFrameオブジェクトから送信電文(HEX)を作成する
         """
+        data = self.ehd + self.tid + self.seoj + self.deoj + self.esv + self.opc
+        for epc, edt in self.properties.items():
+            pdc = '{:02X}'.format(len(edt) // 2)
+            data += epc + pdc + edt
 
-        return ""
+        return data
 
 class BrouteReader ( Worker ):
     """スマートメーターと通信を行い、継続的に電力情報の読み取りを行う。
@@ -966,7 +959,7 @@ class BrouteReader ( Worker ):
         |
         JOIN (接続状態にある)
         |
-        |  _send(cmd) 「プロパティ値読み出し要求」コマンドを送る（瞬時電力や積算電力）
+        |  _sendto(cmd) 「プロパティ値読み出し要求」コマンドを送る（瞬時電力や積算電力）
         |  _receive() 「プロパティ値読み出し応答」スマートメーターからの返信を取得
         |  _accept()   返信データを処理
         |
@@ -1114,9 +1107,9 @@ class BrouteReader ( Worker ):
             self.state = self._STATE_INIT
             time.sleep(5)
 
-    def _send( self, cmd ):
+    def _sendto( self, cmd ):
         """Bルートのプロパティ値要求電文をスマートメーターに送る"""
-        return self.wisundev.send( cmd )
+        return self.wisundev.sendto( cmd )
 
     def _receive ( self ):
         return self.wisundev.receive()
@@ -1250,7 +1243,7 @@ class BrouteReader ( Worker ):
                     # 要求するデータのリストについて、定期的に値要求する
                     if now - req['lasttime'] > req['cycle']:
                         cmd = DataFrame.cmd_get_property(req['epc'])
-                        res = self._send(cmd)
+                        res = self._sendto(cmd)
                         if req['lasttime'] == 0:
                             req['lasttime'] = now
                         else:
