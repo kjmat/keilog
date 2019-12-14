@@ -3,6 +3,11 @@
 
 スマートメーターの情報を取得し、ファイルに記録します。
 
+変更履歴:
+--------------------
+* 2019/12/14 `[ver 0.1.1]` RL7023 Stick-D/IPS シングルスタックに対応、WiSunDevice オブジェクトを BrouteReader 内で作成していたが、設定ファイル内で作成してから BrouteReaderのコンストラクタにわたす形式に変更
+* 2019/12/11 `[ver 0.1.0]` 公開時バージョン
+
 特徴:
 --------------------
 - Raspberry Pi + Python3 で動作
@@ -14,7 +19,8 @@
   - ラズパイでなくても大丈夫だと思いますが、前提としてつけっぱなしになります。
 - スマートメーターBルートデータ取得機能
   - WiSun モジュール RL7023 Stick-D/DSS（デュアルスタック）に対応
-  - （シングルスタックの RL7023 Stick-D/IPS を使うには修正が必要。持ってないので未実装です）
+  - ~~（シングルスタックの RL7023 Stick-D/IPS を使うには修正が必要。持ってないので未実装です）~~
+  - Bルート専用の RL7023 Stick-D/IPS にも対応しました（Ver 0.1.1)、設定ファイル内で指定します
   - 取得したいスマートメーターのプロパティと取得間隔を定義できる。
     * 対応プロパティ = D3,D7,E0,E1,E3,E7,E8,(EA,EB)
     * D3: 係数「積算電力量計測値」を実使用量に換算する係数
@@ -52,6 +58,14 @@ from keilib.broute   import BrouteReader
 # オブジェクト（スレッド）間で通信を行うための Queue
 record_que = queue.Queue(50)
 
+# WiSunデバイスの定義
+# type 引数でドングルの種類（DSS/IPS）を指定する
+wisundev = WiSunRL7023(port='/dev/serial/by-id/xxxxx',
+                            baud=115200,
+                            type=WiSunRL7023.IPS
+                            #type=WiSunRL7023.DSS
+                        )
+
 # 動作させるオブジェクトの構成
 worker_def = [
     {
@@ -64,9 +78,7 @@ worker_def = [
     {
         'class': BrouteReader,                  # BrouteReaderオブジェクトを作成
         'args': {                               # 引数
-            'port': '/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_xxxxxxxx-if00-port0',
-                                                # WiSUNドングルのシリアルポート
-            'baudrate': 115200,                 # WiSUNドングルのボーレート
+            'wisundev': wisundev                # デバイスドライバの指定
             'broute_id': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
                                                 # BルートＩＤ（電力会社に申請）
             'broute_pwd': 'xxxxxxxxxxxx',       # Bルートパスワード（電力会社に申請）

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""WiSUNドングル RL7023 Stick-D/DSS を用いてスマートメーターから電力情報を取得する。
+"""WiSUNドングル RL7023 Stick-D/DSS または IPS を用いてスマートメーターから電力情報を取得する。
 """
 
 import sys
@@ -89,7 +89,6 @@ def hex_to_signed_int(value, digit=0):
     bits = fmtstr.format(int(value,16))
     return -int(bits[0]) << digit2 | int(bits, 2)
 
-
 class WiSunDevice ( metaclass=ABCMeta ):
     """WiSUN デバイスドライバ抽象クラス
 
@@ -139,10 +138,10 @@ class WiSunDevice ( metaclass=ABCMeta ):
         pass
 
     @abstractmethod
-    def send( self, dataframe ):
+    def sendto( self, dataframe ):
         """Echonet Lite データフレームの送信
         引数:
-            dataframe: Echonet 電文（バイナリ）
+            dataframe: Echonet 電文（DataFrame オブジェクト）
         戻り値: True（成功）/False（失敗）
         """
         pass
@@ -168,22 +167,15 @@ class WiSunDevice ( metaclass=ABCMeta ):
         """
         pass
 
-class WiSunRL7023DSS ( WiSunDevice ):
-    """RL7023 Stick-D/DSS 用デバイスドライバ
+class WiSunRL7023 ( WiSunDevice ):
+    """RL7023 Stick-D 用デバイスドライバ
 
     テセラテクノロジーの HEMS 用 Wi-SUN モジュール Route-B/HAN デュアル対応
-    RL7023 Stick-D/DSS を制御するクラス。
-    同じプロトコルスタックを使っているデュアル対応の W-SUN モジュールならばこの
-    まま動作するかもしれない。同社から販売されている Route-B 専用の
-    RL7023 Stick-D/IPSについては、コマンド内容が少し異なるのでこのままでは動作し
-    ない。
-
-    ToDo:
-        SKSCAN, SKSENDTO, ERXUDP, EPANDESC, EVENTなど SIDE 情報を含むもの
-        を修正すれば RL7023 Stick-D/IPS などのBルート専用デバイスに対応できる
-        のでは？
+    RL7023 Stick-D/DSS または シングルタイプの D/IPS を制御するクラス。
     """
-    def __init__( self, port, baud ):
+    IPS=0
+    DSS=1
+    def __init__( self, port, baud , type=DSS):
         """コンストラクタ
         引数:
             port (str): RL7023 のシリアルポートを示すファイルパス
@@ -191,6 +183,7 @@ class WiSunRL7023DSS ( WiSunDevice ):
         """
         self.port = port
         self.baud = baud
+        self.type = type
         self.register = {}
         self.scanresult = {}
 
@@ -257,13 +250,12 @@ class WiSunRL7023DSS ( WiSunDevice ):
         return self.ser.readline()
 
     def _parse_event( self, line ):
-        """読み取った一行のイベントデータを、スペースを区切り文字として分解し、辞書に登録
+        """読み取った一行のイベントデータを、スペースを区切り文字として分解し、チェックして辞書に登録
 
         戻り値:
             変換した結果辞書（空の文字列に対しては空の辞書を返す）
 
         ToDo:
-            Bルート専用モジュールの場合は、<SIDE>が省略されているはず
             ERXUDP, EVENT 以外のイベントへの対応
         """
         # 有効でないASCII文字コードを含む場合は終了
@@ -298,47 +290,75 @@ class WiSunRL7023DSS ( WiSunDevice ):
             SKIP_Command_dse_v1_02a.pdf（商品を購入して、製品登録すれば入手できる）
         """
         if list[0] == 'ERXUDP':
+            idx = 0
+            if self.type == self.DSS:
+                length = 10
+            else:
+                length = 9
+
             # データ数のチェック
-            if len(list) != 10:
+            if len(list) != length:
                 return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
 
             # IPV6 アドレスとして正しいかどうかチェック
             for i in [1,2]:
                 if not is_ipv6_address(list[i]):
+                    logger.debug('invalid IPV6')
                     return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
 
-            # ポート番号、データサイズが 4byte であるか
-            for i in [3,4,8]:
+            # ポート番号、4byte であるか
+            for i in [3,4]:
                 if not is_hex(list[i], length=4):
+                    logger.debug('invalid PORT')
                     return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
 
             # SENDERLLA ローカルアドレスが 16byte であるか
             if not is_hex(list[5], length=16):
+                logger.debug('invalid SENDERLLA')
                 return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
 
-            # SECURED、SIDE が 1byte であるか
-            for i in [6,7]:
-                if not is_hex(list[i], length=1):
+            # SECURED、が 1byte であるか
+            if not is_hex(list[6], length=1):
+                logger.debug('invalid SECURED')
+                return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
+
+            idx = 7
+            if self.type == self.DSS:
+                # SIDE が 1byte であるか
+                if not is_hex(list[7], length=1):
+                    logger.debug('invalid SIDE')
                     return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
+                idx = 8
+            else:
+                idx = 7
+
+            # DATALEN が 4byte であるか
+            if not is_hex(list[idx], length=4):
+                logger.debug('invalid DATALEN')
+                return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
 
             # DATAが HEX 値として読み取れる文字列か
-            if not is_hex(list[8]):
+            if not is_hex(list[idx+1]):
+                logger.debug('invalid DATA')
                 return {'NAME': 'INVALID_ERXUDP', 'LIST': list}
 
             dict = {'NAME':list[0], 'SENDER': list[1], 'DEST': list[2], 'RPORT': list[3],
                     'LPORT': list[4], 'SENDERLLA': list[5], 'SECURED': list[6],
-                    'SIDE': list[7], 'DATALEN': list[8], 'DATA': list[9]}
+                    'DATALEN': list[idx], 'DATA': list[idx+1]}
+
             return dict
 
         # 2. EVENT の場合
         elif list[0] == 'EVENT':
-            if len(list) < 4:
+            if len(list) < 3:
                 return {}
 
-            dict = {'NAME': list[0], 'NUM': list[1], 'SENDER': list[2], 'SIDE': list[3]}
-            if len(list) > 4:
-                dict['PARAM'] = list[4]
-                return dict
+            #dict = {'NAME': list[0], 'NUM': list[1], 'SENDER': list[2], 'SIDE': list[3]}
+            dict = {'NAME': list[0], 'NUM': list[1], 'SENDER': list[2]}
+            #if len(list) > 3:
+            #    dict['PARAM'] = list[4]
+            #    return dict
+            return dict
 
         # 3. その他のイベントの場合（EPONG, EADDR, ENEIGHBOR, EPANDESC, EEDSCAN, ESEC, ENBR）
         else:
@@ -452,13 +472,18 @@ class WiSunRL7023DSS ( WiSunDevice ):
 
         scanresult = {}
         # Step1 デバイスにスキャンコマンドを送る
-        cmd = 'SKSCAN ' + str(mode) + ' ' + mask + ' ' \
-                        + str(duration) + ' ' + str(side) + '\r\n'
+        if self.type == self.DSS:
+            cmd = 'SKSCAN ' + str(mode) + ' ' + mask + ' ' \
+                            + str(duration) + ' ' + str(side) + '\r\n'
+        else:
+            cmd = 'SKSCAN ' + str(mode) + ' ' + mask + ' ' \
+                            + str(duration) + '\r\n'
+
         logger.info(cmd.strip())
         self.ser.write(cmd.encode('ascii'))
         # デバイスからOKが返されるのを待つ
         if not self._wait_ok():
-            return false
+            return False
 
         # Step2 スキャン結果がイベントとして返されるのを待つ
         # 様々なイベントが発生するのでそれぞれ処理する
@@ -661,7 +686,7 @@ class WiSunRL7023DSS ( WiSunDevice ):
         """
         return self.join(rejoin=True)
 
-    def send( self, dataframe ):
+    def sendto( self, dataframe ):
         """スマートメーターにコマンドを送信する
 
         引数:
@@ -672,17 +697,21 @@ class WiSunRL7023DSS ( WiSunDevice ):
             False: 失敗
 
         ToDo:
-            cmd の side を省略すると、Bルート専用のデバイスに対応できるのでは？
+
         """
+        byteframe = bytes.fromhex(dataframe.encode())
         # コマンド送信
-        #               udp_handle
-        #               | addr port
-        #               |  |   |   security 1:encrypt
-        #               |  |   |   | side 0:B-route
-        #               |  |   |   | | length
-        #               |  |   |   | | |
-        cmd = "SKSENDTO 1 {0} 0E1A 1 0 {1:04X} ".format(self.ipv6_addr, len(dataframe)).encode('ascii')
-        cmd += dataframe # + b'\r\n'
+        #                   udp_handle
+        #                   | addr port
+        #                   |  |   |   security 1:encrypt
+        #                   |  |   |   | side 0:B-route
+        #                   |  |   |   | | length
+        #                   |  |   |   | | |
+        if self.type == self.DSS:
+            cmd = "SKSENDTO 1 {0} 0E1A 1 0 {1:04X} ".format(self.ipv6_addr, len(byteframe)).encode('ascii')
+        else:
+            cmd = "SKSENDTO 1 {0} 0E1A 1 {1:04X} ".format(self.ipv6_addr, len(byteframe)).encode('ascii')
+        cmd += byteframe # + b'\r\n'
         self.ser.write(cmd)
         evt21 = False
         toc = 0
@@ -703,7 +732,8 @@ class WiSunRL7023DSS ( WiSunDevice ):
                 return evt21
 
             else:
-                logger.debug(res.decode('ascii').strip())
+                #logger.debug(res.decode('ascii').strip())
+                logger.debug('unknown response')
 
     def receive( self ):
         """スマートメーターからの電文を受信する
@@ -721,7 +751,7 @@ class WiSunRL7023DSS ( WiSunDevice ):
                 dataframe = DataFrame.decode(event['DATALEN'], event['DATA'])
 
                 if dataframe:
-                    logger.debug([event['DATA'],dataframe. dataframe])
+                    logger.debug([event['DATA'], dataframe.endict()])
                     return dataframe
 
                 else:
@@ -838,16 +868,17 @@ class DataFrame ( ):
 
     def __init__( self, dataframe={} ):
         """コンストラクタ"""
-        self.dataframe = dataframe
-        self.ehd = dataframe['EHD']
-        self.tid = dataframe['TID']
-        self.seoj = dataframe['SEOJ']
-        self.deoj = dataframe['DEOJ']
-        self.esv = dataframe['ESV']
-        self.properties = {}
-        for prop in dataframe['PROPERTY']:
-            #prop['EPC']: prop[]
-            self.properties[prop['EPC']] = prop['EDT']
+        #self.dataframe = dataframe
+        if dataframe:
+            self.ehd = dataframe['EHD']
+            self.tid = dataframe['TID']
+            self.seoj = dataframe['SEOJ']
+            self.deoj = dataframe['DEOJ']
+            self.esv = dataframe['ESV']
+            self.properties = {}
+            for prop in dataframe['PROPERTIES']:
+                #prop['EPC']: prop[]
+                self.properties[prop['EPC']] = prop['EDT']
 
     @classmethod
     def decode ( cls, length, encoded_data ):
@@ -871,34 +902,30 @@ class DataFrame ( ):
             logger.error('DataFrame decode error - invalid data')
             return None
 
+        df = cls()
         try:
-            dataframe['EHD' ]     = encoded_data[:4]
-            dataframe['TID' ]     = encoded_data[4:8]
-            dataframe['SEOJ']     = encoded_data[8:14]
-            dataframe['DEOJ']     = encoded_data[14:20]
-            dataframe['ESV' ]     = encoded_data[20:22]
-            dataframe['OPC' ]     = encoded_data[22:24]
-            dataframe['PROPERTY'] = []
+            df.ehd = encoded_data[:4]
+            df.tid = encoded_data[4:8]
+            df.seoj = encoded_data[8:14]
+            df.deoj = encoded_data[14:20]
+            df.esv = encoded_data[20:22]
+            df.opc = encoded_data[22:24]
+            df.properties = {}
             base = 24
-            int_opc = int(dataframe['OPC'], 16)
+            int_opc = int(df.opc, 16)
             for pc in range(int_opc):
-                prop = {}
                 epc = encoded_data[base     : base + 2]
                 pdc = encoded_data[base + 2 : base + 4]
                 int_pdc = int(pdc, 16)
                 edt = encoded_data[base + 4 : base + 4 + int_pdc * 2]
-                prop['EPC'] = epc
-                prop['PDC'] = pdc
-                prop['EDT'] = edt
+                df.properties[epc] = edt
                 base += 4 + int_pdc * 2
-                dataframe['PROPERTY'].append(prop)
 
         except:
             logger.error('DataFrame decode error - conflicting data')
-            logger.error(dataframe)
             return None
 
-        return cls(dataframe)
+        return df
 
     @classmethod
     def cmd_get_property( cls , epc_list ):
@@ -908,39 +935,51 @@ class DataFrame ( ):
             epc_code_list( list of str ): 要求するプロパティコードのリスト
 
         戻り値:
-            構成された電文本体（バイナリ）(SKスタックは送信時はバイナリで電文を指定する)
+            構成されたデータフレームオブジェクト
 
         ToDo:
             SEOJやDEOJは決め打ちでいいのか？
-            電文（バイナリ）を返すだけの仕様だが、インスタンス化の必要はあるか意味があるか
         '''
-
-        ehd  = b'\x10\x81'                      # EHD(2Byte) 0x1081 固定（EchonetBroute Lite)
-        tid  = cls.TID.to_bytes(2,'big')
-        cls.TID  = (cls.TID + 1) % 0xffff       # インクリメントしておく
-        seoj = b'\x05\xFF\x01'                  # SEOJ 送信元オブジェクトの指定 x05:管理操作, xFF:コントローラ
-        deoj = b'\x02\x88\x01'                  # DEOJ 相手先オブジェクトの指定 x02:住宅設備, x88:スマートメータ
-        esv  = b'\x62'                          # ESV サービスコード x62:プロパティ値読み出し要求
-        opc  = len(epc_list).to_bytes(1,'big')  # OPC プロパティカウンタ
-        dataframe = ehd + tid + seoj + deoj + esv + opc
-
+        df = cls()
+        df.ehd = '1081'
+        df.tid = '{:04X}'.format(cls.TID)
+        # cls.TID  = (cls.TID + 1) % 0xffff       # インクリメントしておく
+        df.seoj = '05FF01'
+        df.deoj = '028801'
+        df.esv = '62'
+        df.opc = '{:02X}'.format(len(epc_list))
+        df.properties = {}
         for epc in epc_list:
-            b_epc  = bytes.fromhex(epc)
-            pdc  = b'\x00'
-            dataframe += b_epc + pdc
-
-        logger.debug('Echonet-lite send frame : ' + dataframe.hex())
-
-        return dataframe
+            df.properties[epc] = ''
+        logger.debug('Echonet-lite sendto frame : ' + df.encode())
+        return df
 
     def encode( self ):
-        """DataFrameオブジェクトから送信電文（HEX文字データ列）を作成する
-
-        ToDo:
-            必要？
+        """DataFrameオブジェクトから送信電文(HEX)を作成する
         """
+        data = self.ehd + self.tid + self.seoj + self.deoj + self.esv + self.opc
+        for epc, edt in self.properties.items():
+            pdc = '{:02X}'.format(len(edt) // 2)
+            data += epc + pdc + edt
 
-        return ""
+        return data
+
+    def endict( self ):
+        """DataFrameオブジェクトを見やすい辞書形式に変換する"""
+        dict = {}
+        dict['EHT'] = self.ehd
+        dict['TID'] = self.tid
+        dict['SEOJ'] = self.seoj
+        dict['DEOJ'] = self.deoj
+        dict['ESV'] = self.esv
+        dict['OPC'] = self.opc
+        dict['PROPERTIES'] = {}
+        for prop, value in self.properties.items():
+            dict['PROPERTIES']['EPC'] = prop
+            dict['PROPERTIES']['EDT'] = value
+            dict['PROPERTIES']['PDC'] = '{:02X}'.format(len(value) // 2)
+
+        return dict
 
 class BrouteReader ( Worker ):
     """スマートメーターと通信を行い、継続的に電力情報の読み取りを行う。
@@ -966,7 +1005,7 @@ class BrouteReader ( Worker ):
         |
         JOIN (接続状態にある)
         |
-        |  _send(cmd) 「プロパティ値読み出し要求」コマンドを送る（瞬時電力や積算電力）
+        |  _sendto(cmd) 「プロパティ値読み出し要求」コマンドを送る（瞬時電力や積算電力）
         |  _receive() 「プロパティ値読み出し応答」スマートメーターからの返信を取得
         |  _accept()   返信データを処理
         |
@@ -975,7 +1014,8 @@ class BrouteReader ( Worker ):
         回復不能なエラーが発生したときは、状態を巻き戻し最初からやり直す。
     """
 
-    def __init__( self , port, baudrate, broute_id, broute_pwd, requests=[], record_que=None ):
+#    def __init__( self , port, baudrate, broute_id, broute_pwd, requests=[], record_que=None ):
+    def __init__( self , wisundev, broute_id, broute_pwd, requests=[], record_que=None ):
         """コンストラクタ
 
         引数:
@@ -1001,7 +1041,8 @@ class BrouteReader ( Worker ):
         for req in requests:
             req['lasttime'] = 0
         self.requests = requests
-        self.wisundev = WiSunRL7023DSS( port, baudrate )
+        #self.wisundev = WiSunRL7023DSS( port, baudrate )
+        self.wisundev = wisundev
 
         # 状態
         self._STATE_INIT  = 0
@@ -1114,9 +1155,9 @@ class BrouteReader ( Worker ):
             self.state = self._STATE_INIT
             time.sleep(5)
 
-    def _send( self, cmd ):
+    def _sendto( self, cmd ):
         """Bルートのプロパティ値要求電文をスマートメーターに送る"""
-        return self.wisundev.send( cmd )
+        return self.wisundev.sendto( cmd )
 
     def _receive ( self ):
         return self.wisundev.receive()
@@ -1210,7 +1251,7 @@ class BrouteReader ( Worker ):
             #   EPC=EA:定時 積算電力量 計測値 (正方向計測値)
             #   EPC=EB:定時 積算電力量 計測値 (逆方向計測値)
             logger.warning('unknown SEOJ or ESV : ' + dataframe.seoj + ',' + dataframe.esv)
-            logger.warning(dataframe.dataframe)
+            logger.warning(dataframe.endict())
 
     def _term( self ):
         self.wisundev.term()
@@ -1250,7 +1291,7 @@ class BrouteReader ( Worker ):
                     # 要求するデータのリストについて、定期的に値要求する
                     if now - req['lasttime'] > req['cycle']:
                         cmd = DataFrame.cmd_get_property(req['epc'])
-                        res = self._send(cmd)
+                        res = self._sendto(cmd)
                         if req['lasttime'] == 0:
                             req['lasttime'] = now
                         else:

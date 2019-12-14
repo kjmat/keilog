@@ -26,6 +26,14 @@ upload_key = 'xxxxxxxxxxxxxxxx'
 # settings for BrouteReader
 broute_port = '/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_xxxxxxxx-if00-port0'
 broute_baudrate = 115200
+
+wisundev = WiSunRL7023 (
+                port=broute_port,
+                baud=broute_baudrate,
+                type=WiSunRL7023.IPS # Bルート専用タイプ
+                # type=WiSunRL7023.DSS # デュアルスタックタイプ
+            )
+
 broute_id = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 broute_pwd = 'xxxxxxxxxxxx'
 requests = [
@@ -34,6 +42,7 @@ requests = [
     { 'epc':['E0'], 'cycle': 300 },             # 積算電力量(E0),300秒ごと
 ],
 # definition fo worker objects
+
 worker_def = [
     {
         'class': HttpPostUploader,
@@ -56,8 +65,7 @@ worker_def = [
     {
         'class': BrouteReader,
         'args': {
-            'port': broute_port,
-            'baudrate': broute_baudrate,
+            'wisundev': wisundev,
             'broute_id': broute_id,
             'broute_pwd': broute_pwd,
             'requests': requests,
