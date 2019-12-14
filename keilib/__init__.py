@@ -35,5 +35,5 @@ ToDo:
 '''
 
 __author__  = "MATSUDA, Koji <kjmatsuda@gmail.com>"
-__version__ = "0.1.0"
-__date__    = "2019-12-07"
+__version__ = "0.1.1"
+__date__    = "2019-12-14"

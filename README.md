@@ -53,7 +53,7 @@
 
 import queue
 from keilib.recorder import FileRecorder
-from keilib.broute   import BrouteReader
+from keilib.broute   import BrouteReader, WiSunRL7023
 
 # オブジェクト（スレッド）間で通信を行うための Queue
 record_que = queue.Queue(50)
