@@ -130,6 +130,7 @@ class SerialReader( Worker ):
         self.rechkid = re.compile(r'^[a-zA-Z0-9-]+$')
         self.dataID = 0
         self.checker = checker
+        self.errorcount = 0
         if os.path.exists(self.port):
             ser = serial.Serial(
                 port     = self.port,
@@ -167,17 +168,23 @@ class SerialReader( Worker ):
 
             try:
                 line = self.ser_io.readline();
+                self.errorcount = 0
 
             except UnicodeDecodeError as err:
                 logger.warning('Unicode Decode Error in ser_io.readline(), port=' + self.fileNameBase)
+                time.sleep(5)
+                self.errorcount += 1
+                if self.errorcount > 10:
+                    break
                 continue
 
             except:
-                #print (err)
                 logger.error('Unknown Error in ser_io.readline(), port=' + self.fileNameBase)
-                # continue
-                # run()から抜ける＝スレッドを終了する
-                return
+                time.sleep(5)
+                self.errorcount += 1
+                if self.errorcount > 10:
+                    break
+                continue
 
             # 空行の場合スキップ
             line = line.strip()
