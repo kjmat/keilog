@@ -30,7 +30,7 @@ else:
     debug = 0
 
 # Preparing log files（ログファイルの準備）
-fname = __file__.split('.')
+fname = os.path.basename(__file__).split('.')
 
 if debug:
     LOGLEVEL = logging.DEBUG
@@ -89,7 +89,7 @@ logger.info('start ' + fname[0])
 # 一定間隔でスレッドが停止したかどうかを確認し、停止していた場合は再起動
 while True:
     for wdef in worker_def:
-        if not wdef['instance'].isAlive():
+        if not wdef['instance'].is_alive():
             logger.warning(wdef['class'].__name__ + ' worker object is stoped. restart again.')
             wdef['instance'] = wdef['class']( ** wdef['args'])
             wdef['instance'].start()

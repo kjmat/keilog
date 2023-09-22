@@ -127,7 +127,7 @@ class SerialReader( Worker ):
         self.recent = []
         # self.buff = []
         self.rechkline = re.compile(r'^[a-zA-Z0-9_;:., -]*$')
-        self.rechkid = re.compile(r'^[a-zA-Z0-9-]+$')
+        self.rechkid = re.compile(r'^[a-zA-Z0-9-_]+$')
         self.dataID = 0
         self.checker = checker
         self.errorcount = 0
